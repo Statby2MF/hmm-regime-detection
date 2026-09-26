@@ -1,0 +1,40 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# ===== Environnement virtuel =====
+venv/
+env/
+.venv/
+ENV/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+
+# ===== Données (lourdes) =====
+data/*.csv
+data/*.parquet
+reports/*.pdf
+reports/*.png
+
+# EXCEPTION : garder les screenshots du README
+!docs/screenshots/*.png
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== Secrets =====
+.env
+.streamlit/secrets.toml
