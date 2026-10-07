@@ -43,10 +43,11 @@ CRYPTO_TICKERS = {
 
 #: Fichiers CSV locaux à charger (US + BRVM)
 #: Nom final → nom du fichier dans data/brvm/
+#: Fichiers CSV locaux à charger (US + BRVM)
+#: Note : US_QQQ exclu (historique trop court, démarre en 2024-09)
 LOCAL_FILES = {
     # US
     "US_SPY": "US_SPY.csv",
-    "US_QQQ": "US_QQQ.csv",   # ⚠️ si absent, on le remplacera
     # BRVM (les 3 avec le plus d'historique)
     "BRVM_SNTS": "BRVM_SNTS.csv",
     "BRVM_BOAB": "BRVM_BOAB.csv",
