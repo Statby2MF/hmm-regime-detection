@@ -182,7 +182,11 @@ def compute_max_drawdown(cumulative: pd.Series) -> float:
 
 
 def compute_drawdown_series(cumulative: pd.Series) -> pd.Series:
-    """Série complète de drawdown."""
+    """
+    Série complète de drawdown.
+
+    ⚠️ cumulative doit être une série de prix (pas de log-rendements).
+    """
     peak = cumulative.cummax()
     return (cumulative - peak) / peak
 
@@ -219,12 +223,16 @@ def compute_metrics(
         Métriques de performance.
     """
     # Rendements en décimal
+       # Rendements en décimal
     r = portfolio_returns / 100.0
 
-    # Annualisation
-    total_return = (1 + r).prod() - 1
+    # ⚠️ LOG-RENDEMENTS : on utilise exp(cumsum()) pour le total
+    # (pas (1+r).prod() qui est biaisé)
+    total_log = r.sum()
+    total_return = np.exp(total_log) - 1
+
     n_years = len(r) / TRADING_DAYS
-    annual_return = (1 + total_return) ** (1 / max(n_years, 0.01)) - 1
+    annual_return = np.exp(total_log / max(n_years, 0.01)) - 1
     annual_vol = r.std() * np.sqrt(TRADING_DAYS)
 
     # Sharpe
@@ -292,7 +300,8 @@ def backtest_strategy(
     df["portfolio_returns"] = df["weights_applied"] * df["returns"]
 
     # Cumulé
-    cum = (1 + df["portfolio_returns"] / 100).cumprod() * 100
+        # Cumulé — ⚠️ les rendements sont en LOG, donc on utilise exp()
+    cum = 100 * np.exp(np.cumsum(df["portfolio_returns"] / 100))
     drawdown = compute_drawdown_series(cum)
 
     metrics = compute_metrics(df["portfolio_returns"], df["weights_applied"])
