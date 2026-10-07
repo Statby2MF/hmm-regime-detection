@@ -171,41 +171,51 @@ def build_composite_index(
 # ---------------------------------------------------------------------------
 
 def fit_markov_switching(
-    returns: pd.Series,
+    series: pd.Series,
     n_states: int = 3,
     switching_variance: bool = True,
-    maxiter: int = 500,
-) -> MarkovRegression:
+    maxiter: int = 1000,
+    order: int = 0,
+) -> object:
     """
-    Fit un modèle Markov Switching sur une série de rendements.
+    Fit un modèle Markov Switching sur une série (rendements OU volatilité).
 
     Parameters
     ----------
-    returns : pd.Series
-        Série de rendements (%). Doit être stationnaire.
+    series : pd.Series
+        Série à modéliser.
     n_states : int
-        Nombre de régimes. Défaut : 3.
+        Nombre de régimes.
     switching_variance : bool
-        Si True, la variance change entre régimes (recommandé pour finance).
-        Si False, seule la moyenne change.
+        Variance change entre régimes.
     maxiter : int
-        Nombre max d'itérations EM. Défaut : 500.
+        Nombre max d'itérations (défaut : 1000).
+    order : int
+        Ordre AR. 0 = pas d'AR, 1 = AR(1), etc.
+        Un AR(1) aide à capturer la persistance.
 
     Returns
     -------
-    MarkovRegression
-        Modèle fitté.
+    MarkovRegressionResults
     """
     model = MarkovRegression(
-        returns,
+        series,
         k_regimes=n_states,
-        trend="c",                    # constante par régime
+        trend="c",
         switching_variance=switching_variance,
     )
-    result = model.fit(maxiter=maxiter, disp=False)
+    # Fit avec plusieurs tentatives d'optimisation
+    try:
+        result = model.fit(
+            maxiter=maxiter,
+            disp=False,
+            search_reps=20,     # plusieurs points de départ
+            em_iter=50,         # itérations EM initiales
+        )
+    except Exception:
+        # Fallback : moins d'itérations, pas de search
+        result = model.fit(maxiter=maxiter, disp=False)
     return result
-
-
 # ---------------------------------------------------------------------------
 # Extraction des états et probabilités
 # ---------------------------------------------------------------------------
@@ -335,10 +345,17 @@ def fit_regime_model(
     asset_class: str,
     n_states: int = 3,
     switching_variance: bool = True,
-    maxiter: int = 500,
+    maxiter: int = 1000,
+    feature: str = "returns",  # 'returns' ou 'vol'
 ) -> RegimeFit:
     """
     Pipeline complet : composite → Markov Switching → états → régimes identifiés.
+
+    Parameters
+    ----------
+    feature : str
+        'returns' : fit sur les rendements (comportement initial)
+        'vol'     : fit sur la volatilité (recommandé pour régimes)
     """
     # 1. Composite
     comp_ret, comp_vol = build_composite_index(returns, vol, asset_class)
@@ -353,28 +370,34 @@ def fit_regime_model(
     vol_series = features_df["vol"]
     dates = features_df.index
 
-    # 3. Fit Markov Switching
+    # 3. Choix de la série à fitter
+    if feature == "vol":
+        series_to_fit = vol_series
+    else:
+        series_to_fit = returns_series
+
+    # 4. Fit Markov Switching
     result = fit_markov_switching(
-        returns_series, n_states=n_states,
+        series_to_fit, n_states=n_states,
         switching_variance=switching_variance, maxiter=maxiter,
     )
 
-    # 4. États et probabilités
+    # 5. États et probabilités
     states, proba = extract_states(result, dates)
 
-    # 5. Identification des régimes
+    # 6. Identification des régimes (toujours sur les RENDEMENTS, pas la vol)
     state_to_regime = identify_regimes(states, returns_series, n_states)
     regime_labels = states.map(state_to_regime).rename("regime")
 
-    # 6. Stats par régime
+    # 7. Stats par régime
     regime_stats = compute_regime_stats(
         regime_labels, returns_series, vol_series
     )
 
-    # 7. Matrice de transition
+    # 8. Matrice de transition
     tm = compute_transition_matrix(regime_labels)
 
-    # 8. AIC / BIC
+    # 9. AIC / BIC
     log_lik = float(result.llf)
     aic = float(result.aic)
     bic = float(result.bic)
@@ -395,7 +418,6 @@ def fit_regime_model(
         aic=aic,
         bic=bic,
     )
-
 
 # ---------------------------------------------------------------------------
 # Comparaison multi-classes
@@ -442,10 +464,25 @@ if __name__ == "__main__":
     print(f"   Vol 20j    : {vol.shape}")
     print(f"   Période    : {returns.index[0].date()} → {returns.index[-1].date()}")
 
+    # ⚠️ On fit sur la VOLATILITÉ (feature='vol'), plus structurée
     print("\n" + "=" * 70)
-    print("🔄 Fit des modèles Markov Switching (3 classes)")
+    print("🔄 Fit des modèles Markov Switching sur VOLATILITÉ")
     print("=" * 70)
-    results = fit_all_classes(returns, vol, n_states=3)
+
+    results = {}
+    for asset_class in ASSET_CLASSES_MAP.keys():
+        print(f"\n🔄 {asset_class.upper()}…")
+        try:
+            results[asset_class] = fit_regime_model(
+                returns, vol, asset_class,
+                n_states=3,
+                switching_variance=True,
+                maxiter=1000,
+                feature="vol",   # ← fit sur la volatilité
+            )
+            print(f"   ✅ OK (log-lik = {results[asset_class].log_likelihood:.2f})")
+        except Exception as e:
+            print(f"   ❌ Échec : {e}")
 
     for asset_class, fit in results.items():
         print("\n" + "=" * 70)
