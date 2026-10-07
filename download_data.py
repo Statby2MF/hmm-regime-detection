@@ -1,14 +1,14 @@
 """
-Script de téléchargement des données de marché pour HMM Regime Detection.
+Script de préparation des données pour HMM Regime Detection.
 
-Ce script télécharge les données des classes d'actifs suivantes :
-    - Crypto     : BTC-USD, ETH-USD         (via yfinance)
-    - Actions US : ^GSPC (S&P 500)          (via yfinance)
-    - Actions BRVM : ABJC, BICC, BOAB       (via CSV locaux — voir data/brvm/)
+Stratégie :
+    - Crypto (BTC, ETH) : téléchargés via yfinance
+    - Actions US (SPY, QQQ) : lus depuis data/brvm/*.csv (CSV existants)
+    - Actions BRVM (SNTS, BOAB, ECOC) : lus depuis data/brvm/*.csv
 
 Usage :
     python download_data.py
-    python download_data.py --force     # force le retéléchargement
+    python download_data.py --force
 
 Auteur : Statby2Mf
 Projet : HMM Regime Detection (M2 Statistique, UGB Saint-Louis)
@@ -35,30 +35,33 @@ BRVM_DIR.mkdir(exist_ok=True)
 
 PRICES_FILE = DATA_DIR / "prices.csv"
 
-#: Tickers à télécharger via yfinance.
-TICKERS_YF = {
+#: Crypto à télécharger via yfinance
+CRYPTO_TICKERS = {
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
-    "^GSPC": "SP500",
 }
 
-#: Fichiers BRVM attendus dans data/brvm/.
-#: Format : nom_fichier → nom_colonne_final
-BRVM_FILES = {
-    "brvm_abjc.csv": "BRVM_ABJC",
-    "brvm_bicc.csv": "BRVM_BICC",
-    "brvm_boab.csv": "BRVM_BOAB",
+#: Fichiers CSV locaux à charger (US + BRVM)
+#: Nom final → nom du fichier dans data/brvm/
+LOCAL_FILES = {
+    # US
+    "US_SPY": "US_SPY.csv",
+    "US_QQQ": "US_QQQ.csv",   # ⚠️ si absent, on le remplacera
+    # BRVM (les 3 avec le plus d'historique)
+    "BRVM_SNTS": "BRVM_SNTS.csv",
+    "BRVM_BOAB": "BRVM_BOAB.csv",
+    "BRVM_ECOC": "BRVM_ECOC.csv",
 }
 
 START_DATE = "2018-01-01"
 
 
 # ---------------------------------------------------------------------------
-# Téléchargement yfinance (individuel, comme dans GARCH-EVT)
+# Téléchargement crypto (yfinance)
 # ---------------------------------------------------------------------------
 
-def download_single_ticker(ticker: str, start: str = START_DATE) -> pd.Series:
-    """Télécharge un ticker et renvoie sa série de prix."""
+def download_crypto(ticker: str, start: str = START_DATE) -> pd.Series:
+    """Télécharge une crypto via yfinance."""
     print(f"   → {ticker}… ", end="", flush=True)
     df = yf.download(ticker, start=start, auto_adjust=True, progress=False)
 
@@ -76,71 +79,58 @@ def download_single_ticker(ticker: str, start: str = START_DATE) -> pd.Series:
     return prices
 
 
-def download_yf_data(start: str = START_DATE) -> pd.DataFrame:
-    """Télécharge tous les tickers yfinance."""
-    print(f"📥 Téléchargement yfinance ({len(TICKERS_YF)} actifs)…")
-    series_list = [download_single_ticker(t, start) for t in TICKERS_YF.keys()]
-    df = pd.concat(series_list, axis=1, join="outer").sort_index()
+def download_all_crypto(start: str = START_DATE) -> pd.DataFrame:
+    """Télécharge toutes les cryptos."""
+    print(f"📥 Téléchargement crypto ({len(CRYPTO_TICKERS)} actifs)…")
+    series_list = [download_crypto(t, start) for t in CRYPTO_TICKERS.keys()]
+    return pd.concat(series_list, axis=1, join="outer").sort_index()
+
+
+# ---------------------------------------------------------------------------
+# Chargement CSV locaux (US + BRVM)
+# ---------------------------------------------------------------------------
+
+def load_csv_file(filename: str, col_name: str) -> pd.Series | None:
+    """Charge un CSV avec format Date/Close."""
+    path = BRVM_DIR / filename
+    if not path.exists():
+        print(f"   ⚠️ {filename} introuvable → ignoré")
+        return None
+
+    df = pd.read_csv(path)
+
+    # Détection colonne date
+    date_col = next(
+        (c for c in ["Date", "date", "DATE"] if c in df.columns),
+        df.columns[0],
+    )
+
+    # Détection colonne prix
+    price_col = next(
+        (c for c in ["Close", "close", "CLOSE"] if c in df.columns),
+        df.columns[1],
+    )
+
+    df[date_col] = pd.to_datetime(df[date_col], utc=True).dt.tz_localize(None)
+    df = df.set_index(date_col)[price_col]
+    df = df.sort_index()
+    df.name = col_name
+    df = df[~df.index.duplicated(keep="last")]  # enlève les doublons
     return df
 
 
-# ---------------------------------------------------------------------------
-# Chargement BRVM
-# ---------------------------------------------------------------------------
-
-def load_brvm_data() -> pd.DataFrame:
-    """
-    Charge les CSV BRVM depuis data/brvm/.
-
-    ⚠️ À adapter selon le format EXACT de tes fichiers.
-    Hypothèse : chaque CSV a une colonne 'Date' et une colonne de prix
-                (ex : 'Close', 'close', 'Cours', ...).
-    """
-    print(f"📥 Chargement BRVM ({len(BRVM_FILES)} actifs)…")
-
+def load_all_local() -> pd.DataFrame:
+    """Charge tous les CSV locaux."""
+    print(f"\n📥 Chargement CSV locaux ({len(LOCAL_FILES)} actifs)…")
     series_list = []
-    for filename, col_name in BRVM_FILES.items():
-        path = BRVM_DIR / filename
-        if not path.exists():
-            print(f"   ⚠️ {filename} introuvable → ignoré")
-            continue
-
-        df = pd.read_csv(path)
-
-        # --- Détection automatique des colonnes ---
-        # Cherche une colonne de date
-        date_col = None
-        for candidate in ["Date", "date", "DATE", "datetime", "Datetime"]:
-            if candidate in df.columns:
-                date_col = candidate
-                break
-        if date_col is None:
-            # Sinon, prend la première colonne comme date
-            date_col = df.columns[0]
-
-        # Cherche une colonne de prix
-        price_col = None
-        for candidate in ["Close", "close", "CLOSE", "Cours", "cours",
-                          "Prix", "prix", "Adj Close"]:
-            if candidate in df.columns:
-                price_col = candidate
-                break
-        if price_col is None:
-            # Sinon, prend la 2e colonne
-            price_col = df.columns[1]
-
-        df[date_col] = pd.to_datetime(df[date_col])
-        df = df.set_index(date_col)[price_col]
-        df = df.sort_index()
-        df.name = col_name
-        series_list.append(df)
-        print(f"   → {col_name} : {len(df)} obs "
-              f"({df.index[0].date()} → {df.index[-1].date()})")
-
+    for col_name, filename in LOCAL_FILES.items():
+        print(f"   → {col_name}… ", end="", flush=True)
+        s = load_csv_file(filename, col_name)
+        if s is not None:
+            print(f"{len(s)} obs ({s.index[0].date()} → {s.index[-1].date()})")
+            series_list.append(s)
     if not series_list:
-        print("   ⚠️ Aucune donnée BRVM chargée")
         return pd.DataFrame()
-
     return pd.concat(series_list, axis=1, join="outer").sort_index()
 
 
@@ -148,12 +138,12 @@ def load_brvm_data() -> pd.DataFrame:
 # Fusion
 # ---------------------------------------------------------------------------
 
-def merge_all_sources(yf_df: pd.DataFrame, brvm_df: pd.DataFrame) -> pd.DataFrame:
-    """Fusionne yfinance + BRVM sur l'index de dates."""
+def merge_all_sources(crypto_df: pd.DataFrame,
+                       local_df: pd.DataFrame) -> pd.DataFrame:
+    """Fusionne crypto + local."""
     print("\n🔗 Fusion des sources…")
-    parts = [df for df in [yf_df, brvm_df] if not df.empty]
-    merged = pd.concat(parts, axis=1, join="outer").sort_index()
-    return merged
+    parts = [df for df in [crypto_df, local_df] if not df.empty]
+    return pd.concat(parts, axis=1, join="outer").sort_index()
 
 
 # ---------------------------------------------------------------------------
@@ -167,17 +157,17 @@ def main():
     args = parser.parse_args()
 
     if PRICES_FILE.exists() and not args.force:
-        print(f"ℹ️  {PRICES_FILE} existe déjà. Utilise --force pour retélécharger.")
+        print(f"ℹ️  {PRICES_FILE} existe déjà. Utilise --force.")
         return
 
-    # 1. Téléchargement yfinance
-    yf_df = download_yf_data()
+    # 1. Crypto
+    crypto_df = download_all_crypto()
 
-    # 2. Chargement BRVM
-    brvm_df = load_brvm_data()
+    # 2. CSV locaux
+    local_df = load_all_local()
 
     # 3. Fusion
-    prices = merge_all_sources(yf_df, brvm_df)
+    prices = merge_all_sources(crypto_df, local_df)
 
     # 4. Sauvegarde
     prices.to_csv(PRICES_FILE)
@@ -194,6 +184,11 @@ def main():
     print(f"Actifs : {prices.shape[1]}")
     print("\nNaN par colonne :")
     print(prices.isna().sum().to_string())
+    print("\nDernière date par actif (avant alignment) :")
+    for col in prices.columns:
+        s = prices[col].dropna()
+        if len(s) > 0:
+            print(f"   {col:15s} : {s.index[-1].date()}")
     print("=" * 70)
 
 
