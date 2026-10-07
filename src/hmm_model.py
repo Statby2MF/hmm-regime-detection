@@ -31,7 +31,23 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-from sklearn.hmm import GaussianHMM
+
+# Import robuste : sklearn.hmm (sklearn >= 1.5) OU hmmlearn (fallback)
+try:
+    from sklearn.hmm import GaussianHMM
+    _HMM_SOURCE = "sklearn"
+except ImportError:
+    try:
+        from hmmlearn.hmm import GaussianHMM
+        _HMM_SOURCE = "hmmlearn"
+    except ImportError:
+        raise ImportError(
+            "Impossible d'importer GaussianHMM.\n"
+            "Installe scikit-learn >= 1.5 ou hmmlearn :\n"
+            "  pip install --upgrade scikit-learn\n"
+            "  OU\n"
+            "  pip install --only-binary :all: hmmlearn"
+        )
 
 # ---------------------------------------------------------------------------
 # Configuration
