@@ -530,7 +530,8 @@ if __name__ == "__main__":
     print(f"{'Classe':10s} {'Régime':10s} {'Ret moy':>10s} {'Vol moy':>10s} "
           f"{'Fréq':>8s} {'Durée':>8s}")
     print("-" * 70)
-        for asset_class, fit in results.items():
+        
+    for asset_class, fit in results.items():
         # Affiche dans l'ordre Low → Med → High Vol
         for regime in REGIME_LABELS:
             if regime in fit.regime_stats.index:
