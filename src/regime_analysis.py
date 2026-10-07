@@ -167,8 +167,9 @@ def plot_regimes_on_prices(
     fig, ax = plt.subplots(figsize=(13, 5))
 
     # Prix reconstruits (normalisés à 100)
+        # Prix reconstruits (base 100) — ⚠️ log-rendements → exp(cumsum())
     ret = fit.composite_returns
-    price = (1 + ret / 100).cumprod() * 100
+    price = 100 * np.exp(np.cumsum(ret / 100))
 
     ax.plot(price.index, price.values, color="#1a3a5c", linewidth=1.2,
             label=f"{asset_class} composite (base 100)")
