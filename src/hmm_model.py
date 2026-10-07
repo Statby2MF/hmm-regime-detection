@@ -1,21 +1,19 @@
 """
-Modèle HMM (Hidden Markov Model) pour la détection de régimes de marché.
+Détection de régimes de marché via Markov Switching Regression.
 
-Ce module fournit :
-    - Un fit HMM gaussien sur un indice composite (rendements + vol)
-    - L'inférence des états cachés via l'algorithme de Viterbi
-    - L'identification automatique des régimes (bull / sideways / bear)
-    - La prédiction du régime courant et des probabilités de transition
+Ce module utilise `statsmodels.tsa.regime_switching.markov_regression`
+(implémentation de référence de Hamilton 1989) pour détecter des régimes
+cachés dans les séries de rendements financiers.
 
 Approche :
     1. Pour chaque classe d'actifs (crypto, US, BRVM), on construit un
        indice composite (rendement moyen + vol moyenne).
-    2. On fit un GaussianHMM sur ces features 2D.
+    2. On fit un MarkovRegression avec k régimes.
     3. On identifie les régimes en classant par rendement moyen.
 
 Références :
-    - Hamilton, J. D. (1989). A New Approach to the Economic Analysis
-      of Nonstationary Time Series and the Business Cycle.
+    - Hamilton, J. D. (1989). A New Approach to the Economic Analysis of
+      Nonstationary Time Series and the Business Cycle.
     - Ang, A., & Bekaert, G. (2002). Regime Switches in Interest Rates.
     - Guidolin, M., & Timmermann, A. (2007). Asset allocation under
       multivariate regime switching.
@@ -27,27 +25,11 @@ Projet : HMM Regime Detection (M2 Statistique, UGB Saint-Louis)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
 import numpy as np
 import pandas as pd
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
-# Import robuste : sklearn.hmm (sklearn >= 1.5) OU hmmlearn (fallback)
-try:
-    from sklearn.hmm import GaussianHMM
-    _HMM_SOURCE = "sklearn"
-except ImportError:
-    try:
-        from hmmlearn.hmm import GaussianHMM
-        _HMM_SOURCE = "hmmlearn"
-    except ImportError:
-        raise ImportError(
-            "Impossible d'importer GaussianHMM.\n"
-            "Installe scikit-learn >= 1.5 ou hmmlearn :\n"
-            "  pip install --upgrade scikit-learn\n"
-            "  OU\n"
-            "  pip install --only-binary :all: hmmlearn"
-        )
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -71,7 +53,7 @@ REGIME_LABELS = ["Bear", "Sideways", "Bull"]
 @dataclass
 class RegimeFit:
     """
-    Résultat d'un fit HMM sur une classe d'actifs.
+    Résultat d'un fit Markov Switching sur une classe d'actifs.
 
     Attributes
     ----------
@@ -79,16 +61,16 @@ class RegimeFit:
         'crypto', 'us', ou 'brvm'.
     tickers : list[str]
         Tickers inclus dans la classe.
-    model : GaussianHMM
-        Le modèle fitté (objet sklearn).
+    model : object
+        Le modèle fitté (statsmodels).
     states : pd.Series
-        Série des états inférés (0, 1, 2) indexée par date.
+        Série des états inférés (0..K-1) indexée par date.
     state_proba : pd.DataFrame
-        Probabilités a posteriori de chaque état (shape n×K).
+        Probabilités a posteriori de chaque état.
     regime_labels : pd.Series
-        États renommés en {Bear, Sideways, Bull} (mappage automatique).
+        États renommés en {Bear, Sideways, Bull}.
     regime_stats : pd.DataFrame
-        Stats par régime (rendement moyen, vol moyenne, fréquence, durée).
+        Stats par régime (rendement moyen, vol, fréquence, durée).
     transition_matrix : pd.DataFrame
         Matrice de transition entre régimes nommés.
     composite_returns : pd.Series
@@ -96,7 +78,7 @@ class RegimeFit:
     composite_vol : pd.Series
         Volatilité composite utilisée comme feature.
     n_states : int
-        Nombre d'états (3).
+        Nombre d'états.
     log_likelihood : float
         Log-vraisemblance au point optimal.
     aic : float
@@ -123,7 +105,7 @@ class RegimeFit:
     def summary(self) -> str:
         """Résumé texte lisible."""
         lines = [
-            f"═══ HMM Régimes — {self.asset_class.upper()} ═══",
+            f"═══ Markov Switching — {self.asset_class.upper()} ═══",
             f"  Actifs        : {', '.join(self.tickers)}",
             f"  États         : {self.n_states}",
             f"  Observations  : {len(self.states)}",
@@ -167,20 +149,6 @@ def build_composite_index(
 
     - Rendement composite : moyenne équipondérée des rendements
     - Volatilité composite : moyenne équipondérée des vols 20j
-
-    Parameters
-    ----------
-    returns : pd.DataFrame
-        Log-rendements (%) — colonnes = tickers.
-    vol : pd.DataFrame
-        Volatilité roulante 20j.
-    asset_class : str
-        'crypto', 'us', 'brvm'.
-
-    Returns
-    -------
-    (composite_returns, composite_vol) : tuple of pd.Series
-        Moyenne équipondérée par date.
     """
     if asset_class not in ASSET_CLASSES_MAP:
         raise ValueError(f"Classe inconnue : {asset_class}")
@@ -199,79 +167,74 @@ def build_composite_index(
 
 
 # ---------------------------------------------------------------------------
-# Fit HMM
+# Fit Markov Switching
 # ---------------------------------------------------------------------------
 
-def fit_hmm(
-    features: np.ndarray,
+def fit_markov_switching(
+    returns: pd.Series,
     n_states: int = 3,
-    n_iter: int = 500,
-    random_state: int = 42,
-    covariance_type: str = "full",
-) -> GaussianHMM:
+    switching_variance: bool = True,
+    maxiter: int = 500,
+) -> MarkovRegression:
     """
-    Fit un GaussianHMM sur les features 2D.
+    Fit un modèle Markov Switching sur une série de rendements.
 
     Parameters
     ----------
-    features : np.ndarray
-        Matrice (n_obs, n_features). Typiquement (n, 2) = (ret, vol).
+    returns : pd.Series
+        Série de rendements (%). Doit être stationnaire.
     n_states : int
-        Nombre d'états cachés. Défaut : 3.
-    n_iter : int
-        Nombre max d'itérations Baum-Welch. Défaut : 500.
-    random_state : int
-        Seed pour reproductibilité.
-    covariance_type : str
-        'full', 'diag', 'tied', 'spherical'. Défaut : 'full'.
+        Nombre de régimes. Défaut : 3.
+    switching_variance : bool
+        Si True, la variance change entre régimes (recommandé pour finance).
+        Si False, seule la moyenne change.
+    maxiter : int
+        Nombre max d'itérations EM. Défaut : 500.
 
     Returns
     -------
-    GaussianHMM
+    MarkovRegression
         Modèle fitté.
     """
-    model = GaussianHMM(
-        n_components=n_states,
-        covariance_type=covariance_type,
-        n_iter=n_iter,
-        random_state=random_state,
-        tol=1e-4,
+    model = MarkovRegression(
+        returns,
+        k_regimes=n_states,
+        trend="c",                    # constante par régime
+        switching_variance=switching_variance,
     )
-    model.fit(features)
-    return model
+    result = model.fit(maxiter=maxiter, disp=False)
+    return result
 
 
-def compute_aic_bic(model: GaussianHMM, n_obs: int, n_features: int = 2) -> tuple[float, float]:
+# ---------------------------------------------------------------------------
+# Extraction des états et probabilités
+# ---------------------------------------------------------------------------
+
+def extract_states(result, index: pd.DatetimeIndex) -> tuple[pd.Series, pd.DataFrame]:
     """
-    Calcule AIC et BIC pour un HMM.
+    Extrait la séquence d'états et les probabilités a posteriori.
 
-    Nombre de paramètres :
-        K - 1              (transitions, chaque ligne somme à 1)
-        + K*(K-1)          (transitions complètes)
-        + K * n_features   (moyennes)
-        + K * n_features^2 (covariances full)
+    Parameters
+    ----------
+    result : MarkovRegressionResults
+        Modèle fitté.
+    index : pd.DatetimeIndex
+        Index des dates (aligné avec les observations).
+
+    Returns
+    -------
+    (states, probabilities) : tuple of pd.Series, pd.DataFrame
     """
-    K = model.n_components
-    n_params = K * (K - 1) + K * n_features + K * n_features * n_features
-    log_lik = model.score(features=None) if hasattr(model, "score") else model.score_.x  # fallback
+    # Probabilités lissées (smoothed)
+    proba = result.smoothed_marginal_probabilities
+    proba.index = index[:len(proba)]
+    proba.columns = [f"state_{k}" for k in range(proba.shape[1])]
 
-    # ⚠️ sklearn ne renvoie pas directement la log-vraisemblance totale après fit
-    # → on la récupère via model.score(samples) qui est la log-vraisemblance MOYENNE
-    # On multiplie par n_obs pour retrouver la log-vraisemblance totale
-    try:
-        avg_log_lik = model.score(None)  # marche pas toujours
-    except Exception:
-        avg_log_lik = 0.0
+    # État = argmax des probabilités
+    states = proba.idxmax(axis=1).str.replace("state_", "").astype(int)
+    states.name = "state"
 
-    # Fallback : utiliser l'attribut interne
-    if hasattr(model, "monitor_") and hasattr(model.monitor_, "history"):
-        log_lik = model.monitor_.history[-1]
-    else:
-        log_lik = avg_log_lik
-
-    aic = -2 * log_lik + 2 * n_params
-    bic = -2 * log_lik + n_params * np.log(n_obs)
-    return float(aic), float(bic)
+    return states, proba
 
 
 # ---------------------------------------------------------------------------
@@ -279,51 +242,38 @@ def compute_aic_bic(model: GaussianHMM, n_obs: int, n_features: int = 2) -> tupl
 # ---------------------------------------------------------------------------
 
 def identify_regimes(
-    model: GaussianHMM,
-    states: np.ndarray,
-    composite_returns: pd.Series,
-    composite_vol: pd.Series,
+    states: pd.Series,
+    returns: pd.Series,
+    n_states: int,
 ) -> dict[int, str]:
     """
-    Identifie les régimes en les classant par rendement moyen.
+    Identifie les régimes en classant par rendement moyen.
 
     Règle :
         - Rendement le plus faible → 'Bear'
         - Rendement intermédiaire → 'Sideways'
         - Rendement le plus élevé → 'Bull'
-
-    Parameters
-    ----------
-    model : GaussianHMM
-    states : np.ndarray
-        Séquence d'états (0..K-1) indexée par date.
-    composite_returns : pd.Series
-    composite_vol : pd.Series
-
-    Returns
-    -------
-    dict
-        {state_id: regime_label}
     """
-    # Calcule le rendement moyen de chaque état
     state_returns = {}
-    for k in range(model.n_components):
+    for k in range(n_states):
         mask = states == k
         if mask.sum() > 0:
-            state_returns[k] = composite_returns.iloc[mask].mean() if hasattr(composite_returns, 'iloc') else composite_returns[mask].mean()
+            state_returns[k] = float(returns[mask].mean())
         else:
             state_returns[k] = np.nan
 
-    # Trie par rendement croissant
     sorted_states = sorted(state_returns.items(), key=lambda x: x[1])
 
-    # Mappe : plus faible rendement → Bear, plus haut → Bull
     mapping = {}
-    if len(sorted_states) >= 1:
+    if n_states == 2:
+        # Bear / Bull seulement
         mapping[sorted_states[0][0]] = "Bear"
-    if len(sorted_states) >= 3:
-        mapping[sorted_states[1][0]] = "Sideways"
-    if len(sorted_states) >= 2:
+        mapping[sorted_states[-1][0]] = "Bull"
+    else:
+        # Bear / Sideways / Bull
+        mapping[sorted_states[0][0]] = "Bear"
+        if len(sorted_states) >= 3:
+            mapping[sorted_states[1][0]] = "Sideways"
         mapping[sorted_states[-1][0]] = "Bull"
     return mapping
 
@@ -333,14 +283,7 @@ def compute_regime_stats(
     composite_returns: pd.Series,
     composite_vol: pd.Series,
 ) -> pd.DataFrame:
-    """
-    Calcule les statistiques descriptives par régime.
-
-    Returns
-    -------
-    pd.DataFrame
-        Index = régimes, colonnes = [mean_return, mean_vol, frequency, avg_duration]
-    """
+    """Calcule les stats descriptives par régime."""
     rows = []
     for regime in REGIME_LABELS:
         mask = states_labeled == regime
@@ -355,7 +298,7 @@ def compute_regime_stats(
             })
             continue
 
-        # Durée moyenne = longueur moyenne des blocs consécutifs
+        # Durée moyenne des blocs consécutifs
         blocks = (states_labeled != states_labeled.shift()).cumsum()
         regime_blocks = blocks[mask].value_counts()
         avg_dur = float(regime_blocks.mean()) if len(regime_blocks) > 0 else np.nan
@@ -371,24 +314,13 @@ def compute_regime_stats(
     return pd.DataFrame(rows).set_index("regime")
 
 
-def compute_transition_matrix(
-    states_labeled: pd.Series,
-) -> pd.DataFrame:
-    """
-    Calcule la matrice de transition empirique entre régimes nommés.
-
-    Returns
-    -------
-    pd.DataFrame
-        Matrice 3×3 (Bear, Sideways, Bull), valeurs = probabilités.
-    """
-    # Compte les transitions
+def compute_transition_matrix(states_labeled: pd.Series) -> pd.DataFrame:
+    """Calcule la matrice de transition empirique entre régimes nommés."""
     tm = pd.crosstab(
         states_labeled.shift(1),
         states_labeled,
         normalize="index",
     )
-    # Réindexe dans l'ordre canonique
     tm = tm.reindex(index=REGIME_LABELS, columns=REGIME_LABELS, fill_value=0.0)
     return tm
 
@@ -402,88 +334,62 @@ def fit_regime_model(
     vol: pd.DataFrame,
     asset_class: str,
     n_states: int = 3,
-    n_iter: int = 500,
-    random_state: int = 42,
+    switching_variance: bool = True,
+    maxiter: int = 500,
 ) -> RegimeFit:
     """
-    Pipeline complet : composite → HMM → états → régimes identifiés.
-
-    Parameters
-    ----------
-    returns : pd.DataFrame
-        Log-rendements (%) de tous les actifs.
-    vol : pd.DataFrame
-        Volatilité roulante 20j.
-    asset_class : str
-    n_states : int
-    n_iter : int
-    random_state : int
-
-    Returns
-    -------
-    RegimeFit
+    Pipeline complet : composite → Markov Switching → états → régimes identifiés.
     """
     # 1. Composite
     comp_ret, comp_vol = build_composite_index(returns, vol, asset_class)
 
-    # 2. Features 2D (avec dropna pour aligner)
+    # 2. Aligne sur les mêmes dates
     features_df = pd.DataFrame({
         "return": comp_ret,
         "vol": comp_vol,
     }).dropna()
 
-    features = features_df.values
+    returns_series = features_df["return"]
+    vol_series = features_df["vol"]
     dates = features_df.index
 
-    # 3. Fit HMM
-    model = fit_hmm(features, n_states=n_states,
-                    n_iter=n_iter, random_state=random_state)
-
-    # 4. Inférence des états (Viterbi)
-    states_arr = model.predict(features)
-    states = pd.Series(states_arr, index=dates, name="state")
-
-    # 5. Probabilités a posteriori
-    proba_arr = model.predict_proba(features)
-    state_proba = pd.DataFrame(
-        proba_arr,
-        index=dates,
-        columns=[f"state_{k}" for k in range(n_states)],
+    # 3. Fit Markov Switching
+    result = fit_markov_switching(
+        returns_series, n_states=n_states,
+        switching_variance=switching_variance, maxiter=maxiter,
     )
 
-    # 6. Identification des régimes
-    state_to_regime = identify_regimes(
-        model, states_arr,
-        features_df["return"].reset_index(drop=True),
-        features_df["vol"].reset_index(drop=True),
-    )
+    # 4. États et probabilités
+    states, proba = extract_states(result, dates)
+
+    # 5. Identification des régimes
+    state_to_regime = identify_regimes(states, returns_series, n_states)
     regime_labels = states.map(state_to_regime).rename("regime")
 
-    # 7. Stats par régime
-    comp_ret_aligned = comp_ret.loc[dates]
-    comp_vol_aligned = comp_vol.loc[dates]
-    regime_stats = compute_regime_stats(regime_labels, comp_ret_aligned, comp_vol_aligned)
+    # 6. Stats par régime
+    regime_stats = compute_regime_stats(
+        regime_labels, returns_series, vol_series
+    )
 
-    # 8. Matrice de transition
+    # 7. Matrice de transition
     tm = compute_transition_matrix(regime_labels)
 
-    # 9. AIC / BIC
-    log_lik = float(model.monitor_.history[-1]) if hasattr(model, "monitor_") else float(model.score(features) * len(features))
-    n_params = n_states * (n_states - 1) + n_states * 2 + n_states * 2 * 2
-    aic = -2 * log_lik + 2 * n_params
-    bic = -2 * log_lik + n_params * np.log(len(features))
+    # 8. AIC / BIC
+    log_lik = float(result.llf)
+    aic = float(result.aic)
+    bic = float(result.bic)
 
     return RegimeFit(
         asset_class=asset_class,
         tickers=ASSET_CLASSES_MAP[asset_class],
-        model=model,
+        model=result,
         states=states,
-        state_proba=state_proba,
+        state_proba=proba,
         regime_labels=regime_labels,
         regime_stats=regime_stats,
         transition_matrix=tm,
-        composite_returns=comp_ret_aligned,
-        composite_vol=comp_vol_aligned,
+        composite_returns=returns_series,
+        composite_vol=vol_series,
         n_states=n_states,
         log_likelihood=log_lik,
         aic=aic,
@@ -499,22 +405,19 @@ def fit_all_classes(
     returns: pd.DataFrame,
     vol: pd.DataFrame,
     n_states: int = 3,
-    n_iter: int = 500,
+    switching_variance: bool = True,
+    maxiter: int = 500,
 ) -> dict[str, RegimeFit]:
-    """
-    Fit un HMM pour chaque classe d'actifs.
-
-    Returns
-    -------
-    dict of {asset_class: RegimeFit}
-    """
+    """Fit un modèle Markov Switching pour chaque classe d'actifs."""
     results = {}
     for asset_class in ASSET_CLASSES_MAP.keys():
-        print(f"\n🔄 Fit HMM — {asset_class.upper()}…")
+        print(f"\n🔄 Fit Markov Switching — {asset_class.upper()}…")
         try:
             results[asset_class] = fit_regime_model(
                 returns, vol, asset_class,
-                n_states=n_states, n_iter=n_iter,
+                n_states=n_states,
+                switching_variance=switching_variance,
+                maxiter=maxiter,
             )
             print(f"   ✅ OK (log-lik = {results[asset_class].log_likelihood:.2f})")
         except Exception as e:
@@ -530,29 +433,25 @@ if __name__ == "__main__":
     from src.data_manager import get_all_features
 
     print("=" * 70)
-    print("🔍 Test du module HMM Regime Detection")
+    print("🔍 Test du module Regime Detection (Markov Switching)")
     print("=" * 70)
 
-    # 1. Charger les features
     print("\n📊 Chargement des features…")
     returns, vol = get_all_features(vol_window=20)
     print(f"   Rendements : {returns.shape}")
     print(f"   Vol 20j    : {vol.shape}")
     print(f"   Période    : {returns.index[0].date()} → {returns.index[-1].date()}")
 
-    # 2. Fit HMM pour chaque classe
     print("\n" + "=" * 70)
-    print("🔄 Fit des HMM (3 classes)")
+    print("🔄 Fit des modèles Markov Switching (3 classes)")
     print("=" * 70)
-    results = fit_all_classes(returns, vol, n_states=3, n_iter=500)
+    results = fit_all_classes(returns, vol, n_states=3)
 
-    # 3. Résumé par classe
     for asset_class, fit in results.items():
         print("\n" + "=" * 70)
         print(fit.summary())
         print("=" * 70)
 
-    # 4. Comparaison inter-classes
     print("\n" + "=" * 70)
     print("📊 COMPARAISON INTER-CLASSES")
     print("=" * 70)
@@ -570,7 +469,6 @@ if __name__ == "__main__":
                       f"{row['frequency']:>7.1%} "
                       f"{row['avg_duration']:>7.1f}j")
 
-    # 5. Régimes actuels
     print("\n" + "=" * 70)
     print(f"🎯 RÉGIMES ACTUELS (au {returns.index[-1].date()})")
     print("=" * 70)
