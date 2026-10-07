@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -84,7 +85,7 @@ def download_all_crypto(start: str = START_DATE) -> pd.DataFrame:
     """Télécharge toutes les cryptos."""
     print(f"📥 Téléchargement crypto ({len(CRYPTO_TICKERS)} actifs)…")
     series_list = [download_crypto(t, start) for t in CRYPTO_TICKERS.keys()]
-    return pd.concat(series_list, axis=1, join="outer").sort_index()
+    return pd.concat(series_list, axis=1, join="outer", sort=False).sort_index()
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +133,7 @@ def load_all_local() -> pd.DataFrame:
             series_list.append(s)
     if not series_list:
         return pd.DataFrame()
-    return pd.concat(series_list, axis=1, join="outer").sort_index()
+    return pd.concat(series_list, axis=1, join="outer", sort=False).sort_index()
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +145,7 @@ def merge_all_sources(crypto_df: pd.DataFrame,
     """Fusionne crypto + local."""
     print("\n🔗 Fusion des sources…")
     parts = [df for df in [crypto_df, local_df] if not df.empty]
-    return pd.concat(parts, axis=1, join="outer").sort_index()
+    return pd.concat(parts, axis=1, join="outer", sort=False).sort_index()
 
 
 # ---------------------------------------------------------------------------
