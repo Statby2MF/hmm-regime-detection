@@ -32,7 +32,10 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 from sklearn.hmm import GaussianHMM
-
+try:
+from sklearn.hmm import GaussianHMM
+except ImportError:
+from hmmlearn.hmm import GaussianHMM
 
 # ---------------------------------------------------------------------------
 # Configuration
