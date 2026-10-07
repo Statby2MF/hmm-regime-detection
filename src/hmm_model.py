@@ -255,35 +255,62 @@ def identify_regimes(
     states: pd.Series,
     returns: pd.Series,
     n_states: int,
+    vol: pd.Series = None,
+    sort_by: str = "vol",
 ) -> dict[int, str]:
     """
-    Identifie les régimes en classant par rendement moyen.
+    Identifie les régimes en les classant.
 
-    Règle :
-        - Rendement le plus faible → 'Bear'
-        - Rendement intermédiaire → 'Sideways'
-        - Rendement le plus élevé → 'Bull'
+    Parameters
+    ----------
+    states : pd.Series
+        Série d'états.
+    returns : pd.Series
+        Rendements (pour Bear/Bull si sort_by='returns').
+    n_states : int
+    vol : pd.Series, optional
+        Volatilité (nécessaire si sort_by='vol').
+    sort_by : str
+        'vol'      : trie par volatilité → High/Med/Low Vol (recommandé)
+        'returns'  : trie par rendement → Bear/Sideways/Bull (classique)
+
+    Returns
+    -------
+    dict {state_id: regime_label}
     """
+    if sort_by == "vol" and vol is not None:
+        # Trie par volatilité moyenne
+        state_vol = {}
+        for k in range(n_states):
+            mask = states == k
+            state_vol[k] = float(vol[mask].mean()) if mask.sum() > 0 else np.nan
+
+        sorted_states = sorted(state_vol.items(), key=lambda x: x[1])
+        # Vol faible → Bull (calme), vol forte → Bear (stress)
+        mapping = {}
+        if n_states == 2:
+            mapping[sorted_states[0][0]] = "Bull"    # vol faible
+            mapping[sorted_states[-1][0]] = "Bear"   # vol forte
+        else:
+            mapping[sorted_states[0][0]] = "Bull"    # vol faible
+            mapping[sorted_states[1][0]] = "Sideways"
+            mapping[sorted_states[-1][0]] = "Bear"   # vol forte
+        return mapping
+
+    # Sinon : tri par rendement (comportement classique)
     state_returns = {}
     for k in range(n_states):
         mask = states == k
-        if mask.sum() > 0:
-            state_returns[k] = float(returns[mask].mean())
-        else:
-            state_returns[k] = np.nan
+        state_returns[k] = float(returns[mask].mean()) if mask.sum() > 0 else np.nan
 
     sorted_states = sorted(state_returns.items(), key=lambda x: x[1])
-
     mapping = {}
     if n_states == 2:
-        # Bear / Bull seulement
         mapping[sorted_states[0][0]] = "Bear"
         mapping[sorted_states[-1][0]] = "Bull"
     else:
-        # Bear / Sideways / Bull
         mapping[sorted_states[0][0]] = "Bear"
-        if len(sorted_states) >= 3:
-            mapping[sorted_states[1][0]] = "Sideways"
+        mapping[sorted_states[1][0]] = "Sideways"
         mapping[sorted_states[-1][0]] = "Bull"
     return mapping
 
@@ -386,7 +413,11 @@ def fit_regime_model(
     states, proba = extract_states(result, dates)
 
     # 6. Identification des régimes (toujours sur les RENDEMENTS, pas la vol)
-    state_to_regime = identify_regimes(states, returns_series, n_states)
+        # 6. Identification des régimes (par VOLATILITÉ, cohérent avec le fit)
+    state_to_regime = identify_regimes(
+        states, returns_series, n_states,
+        vol=vol_series, sort_by="vol",
+    )
     regime_labels = states.map(state_to_regime).rename("regime")
 
     # 7. Stats par régime
