@@ -138,7 +138,7 @@ def clean_prices(prices: pd.DataFrame) -> tuple[pd.DataFrame, DataQualityReport]
 
     # 2. Forward-fill limité (les BRVM ne cotent pas les weekends mais peuvent
     #    avoir des jours fériés → 3 jours max)
-    prices = prices.ffill(limit=3)
+    prices = prices.ffill(limit=1)
 
     # 3. Garde les dates où tous les actifs ont un prix
     prices = prices.dropna()
