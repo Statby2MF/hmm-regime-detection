@@ -31,7 +31,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-from hmmlearn.hmm import GaussianHMM
+from sklearn.hmm import GaussianHMM
 
 # ---------------------------------------------------------------------------
 # Configuration
