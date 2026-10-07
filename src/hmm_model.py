@@ -42,8 +42,8 @@ ASSET_CLASSES_MAP: dict[str, list[str]] = {
     "brvm":   ["BRVM_SNTS", "BRVM_BOAB", "BRVM_ECOC"],
 }
 
-#: Noms de régimes (ordre d'affichage après identification)
-REGIME_LABELS = ["Bear", "Sideways", "Bull"]
+#: Noms de régimes (nomenclature par niveau de volatilité)
+REGIME_LABELS = ["Low Vol", "Med Vol", "High Vol"]
 
 
 # ---------------------------------------------------------------------------
@@ -261,42 +261,45 @@ def identify_regimes(
     """
     Identifie les régimes en les classant.
 
-    Parameters
-    ----------
-    states : pd.Series
-        Série d'états.
-    returns : pd.Series
-        Rendements (pour Bear/Bull si sort_by='returns').
-    n_states : int
-    vol : pd.Series, optional
-        Volatilité (nécessaire si sort_by='vol').
-    sort_by : str
-        'vol'      : trie par volatilité → High/Med/Low Vol (recommandé)
-        'returns'  : trie par rendement → Bear/Sideways/Bull (classique)
-
-    Returns
-    -------
-    dict {state_id: regime_label}
+    Par défaut, classement par volatilité (feature du fit) :
+        - Vol la plus faible  → 'Low Vol'
+        - Vol intermédiaire   → 'Med Vol'
+        - Vol la plus élevée  → 'High Vol'
     """
     if sort_by == "vol" and vol is not None:
-        # Trie par volatilité moyenne
         state_vol = {}
         for k in range(n_states):
             mask = states == k
             state_vol[k] = float(vol[mask].mean()) if mask.sum() > 0 else np.nan
 
         sorted_states = sorted(state_vol.items(), key=lambda x: x[1])
-        # Vol faible → Bull (calme), vol forte → Bear (stress)
         mapping = {}
+
         if n_states == 2:
-            mapping[sorted_states[0][0]] = "Bull"    # vol faible
-            mapping[sorted_states[-1][0]] = "Bear"   # vol forte
+            mapping[sorted_states[0][0]] = "Low Vol"
+            mapping[sorted_states[-1][0]] = "High Vol"
         else:
-            mapping[sorted_states[0][0]] = "Bull"    # vol faible
-            mapping[sorted_states[1][0]] = "Sideways"
-            mapping[sorted_states[-1][0]] = "Bear"   # vol forte
+            mapping[sorted_states[0][0]] = "Low Vol"
+            mapping[sorted_states[1][0]] = "Med Vol"
+            mapping[sorted_states[-1][0]] = "High Vol"
         return mapping
 
+    # Fallback : classement par rendement (ancien comportement)
+    state_returns = {}
+    for k in range(n_states):
+        mask = states == k
+        state_returns[k] = float(returns[mask].mean()) if mask.sum() > 0 else np.nan
+
+    sorted_states = sorted(state_returns.items(), key=lambda x: x[1])
+    mapping = {}
+    if n_states == 2:
+        mapping[sorted_states[0][0]] = "Bear"
+        mapping[sorted_states[-1][0]] = "Bull"
+    else:
+        mapping[sorted_states[0][0]] = "Bear"
+        mapping[sorted_states[1][0]] = "Sideways"
+        mapping[sorted_states[-1][0]] = "Bull"
+    return mapping
     # Sinon : tri par rendement (comportement classique)
     state_returns = {}
     for k in range(n_states):
@@ -527,7 +530,8 @@ if __name__ == "__main__":
     print(f"{'Classe':10s} {'Régime':10s} {'Ret moy':>10s} {'Vol moy':>10s} "
           f"{'Fréq':>8s} {'Durée':>8s}")
     print("-" * 70)
-    for asset_class, fit in results.items():
+        for asset_class, fit in results.items():
+        # Affiche dans l'ordre Low → Med → High Vol
         for regime in REGIME_LABELS:
             if regime in fit.regime_stats.index:
                 row = fit.regime_stats.loc[regime]
