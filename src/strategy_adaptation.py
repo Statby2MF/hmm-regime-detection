@@ -476,3 +476,23 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("✅ Backtest terminé")
     print("=" * 70)
+        # Sauvegarde des résultats de backtest
+    print("\n" + "=" * 70)
+    print("💾 Sauvegarde des résultats")
+    print("=" * 70)
+
+    from pathlib import Path
+    DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+    DATA_DIR.mkdir(exist_ok=True)
+
+    all_strategies = {}
+    for asset_class, fit in all_results.items():
+        strategies_results = run_all_strategies(fit)
+        table = compare_strategies(strategies_results)
+        table.insert(0, "asset_class", asset_class)
+        all_strategies[asset_class] = table
+
+    # Concatène tout
+    df_all = pd.concat(all_strategies.values(), ignore_index=True)
+    df_all.to_csv(DATA_DIR / "strategy_results.csv", index=False)
+    print(f"💾 Résultats : {DATA_DIR / 'strategy_results.csv'}")
